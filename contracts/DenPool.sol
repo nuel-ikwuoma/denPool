@@ -6,6 +6,7 @@ contract DenPool {
     uint256 public maxPoolLifespan;
     uint256 public maxPoolAllowedToLive;
     uint256 public numPoolsAlive;
+    uint256 weiScale = 10e18;
 
     address public admin;
 
@@ -24,7 +25,7 @@ contract DenPool {
         uint256 poolSize;
         uint256 curSize;
         uint256 totalPoolFund;
-        uint256 raisedPoolFund;
+        // uint256 raisedPoolFund;
         uint256 totalProjectFundRequested;
         uint256 percentThreshold;
         uint256 createdAt;
@@ -36,8 +37,15 @@ contract DenPool {
     }
 
     mapping(uint256 => Pool) pools;
+    mapping(uint256 => bool) poolExists;
+    mapping(uint256 => uint256) poolsBalances;
     mapping(uint256 => uint256) poolProjects;
     uint256 nextPoolID;
+
+    // events
+    event PoolCreated(uint256 poolID, uint256 createdAt, uint256 endingAt);
+    event PoolClosed(uint256 poolID);
+    event ProjectAdded(uint256 poolID, uint256 projectIDInPool);
 
     constructor(uint256 _maxPoolLifespan, uint256 _maxPoolAllowedToLive) {
         admin = _msgSender();
@@ -61,6 +69,9 @@ contract DenPool {
         _pool.percentThreshold = _percentThreshold;
         _pool.createdAt = _now();
         _pool.endingAt = _endingAt;
+        
+        poolExists[nextPoolID] = true;
+        emit PoolCreated(nextPoolID, _pool.createdAt, _endingAt);
 
         nextPoolID++;
         numPoolsAlive++;
@@ -74,14 +85,15 @@ contract DenPool {
             "DenPool::closePool 'pool still alive'"
         );
         uint256 poolSize = _pool.curSize;
+        uint256 poolBalance = poolsBalances[_poolID];
         for (uint256 i = 0; i <= poolSize; i++) {
             // payout project owners
             Project storage _project = _pool.poolProjects[i];
-            uint256 poolShareRatio = _project.requestedFund /
-                _pool.totalProjectFundRequested;
-            uint256 poolShareAmount = poolShareRatio * _pool.raisedPoolFund;
-            _project.owner.transfer(poolShareAmount);
+            uint256 poolShareAmount = (_project.requestedFund / _pool.totalProjectFundRequested * poolBalance * weiScale);
+            _project.owner.transfer(poolShareAmount / weiScale);
         }
+        emit PoolClosed(_poolID);
+        poolExists[_poolID] = false;
         // delete the pool from the mappin
         delete pools[_poolID];
         numPoolsAlive--;
@@ -103,7 +115,17 @@ contract DenPool {
         newProject.owner = payable(_owner);
         pools[poolID].nextProjectID++;
         pools[poolID].curSize++;
+        pools[poolID].totalProjectFundRequested += _reqFund;
         pools[poolID].limitExceeded = pools[poolID].curSize < pools[poolID].poolSize;
+
+        emit ProjectAdded(poolID, nextProjectID);
+        return true;
+    }
+
+    function fundPool(uint _poolID) external payable poolExist(_poolID) returns(bool) {
+        uint256 fundAmount = msg.value;
+        require(fundAmount > 0, "Please send some ether with this transaction");
+        poolsBalances[_poolID] += fundAmount;
         return true;
     }
 
@@ -146,6 +168,11 @@ contract DenPool {
     modifier poolLimitNotExceeded(uint256 _poolID) {
         Pool storage _pool = pools[_poolID];
         require(!_pool.limitExceeded, "Pool limit exceeded");
+        _;
+    }
+
+    modifier poolExist(uint256 _poolID) {
+        require(poolExists[_poolID], "Pool does not exists");
         _;
     }
 
